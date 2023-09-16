@@ -1,5 +1,8 @@
 use atomic_wait::{wait, wake_one, wake_all};
 use std::sync::atomic::{AtomicU32, Ordering::{Relaxed, Acquire, Release}};
+use std::cell::UnsafeCell;
+use std::ops::{Deref, DerefMut};
+
 
 /// A basic Semaphore implementation. Keeps track of a counter which can have configurable max and initial values.
 /// Can be used to implement other synchronization primitives.
@@ -68,6 +71,64 @@ impl Semaphore {
         }
     }
 }
+
+unsafe impl Sync for Semaphore {}
+unsafe impl Send for Semaphore {}
+
+/// Basic implementation of a three state mutex.
+pub struct Mutex<T> {
+    semaphore: Semaphore,
+    data: UnsafeCell<T>,
+}
+
+impl<T> Mutex<T> {
+    /// Associated method for creating a new `Mutex`.
+    pub fn new(value: T) -> Self {
+        Self {
+            semaphore: Semaphore::init(0, 1),
+            data: UnsafeCell::new(value),
+        }
+    }
+
+    /// Method for locking the mutex. If the lock is unsuccessfully the current threads execution will
+    /// block, and wait until it is woken up.
+    pub fn lock(&self) -> MutexGuard<T> {
+        // Once we return from `self.semaphore.signal()` we know the mutex is locked
+        self.semaphore.signal();
+        MutexGuard { mutex: self }
+    }
+}
+
+unsafe impl<T> Sync for Mutex<T> where T: Send + Sync {}
+
+/// A guard for `Mutex<T>`. Ensures thread/memory safety of the data held by a `Mutex`
+pub struct MutexGuard<'a, T> {
+    mutex: &'a Mutex<T>,
+}
+
+impl<T> Deref for MutexGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        // Safety: if we have a `MutexGuard` we know we have exclusive access to the data
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<T> DerefMut for MutexGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // Safety: if we have a `MutexGuard` we know we have exclusive access to the data
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<T> Drop for MutexGuard<'_, T> {
+    fn drop(&mut self) {
+        // Reduce the count of the semaphore back to 0, unlocking the `Mutex`
+        self.mutex.semaphore.wait();
+    }
+}
+
+
 
 fn main() {
     println!("Hello, world!");
