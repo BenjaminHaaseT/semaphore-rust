@@ -1,7 +1,11 @@
 use atomic_wait::{wait, wake_one, wake_all};
+use rand::{thread_rng, Rng};
 use std::sync::atomic::{AtomicU32, Ordering::{Relaxed, Acquire, Release}};
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
+use std::thread;
+
+
 
 
 /// A basic Semaphore implementation. Keeps track of a counter which can have configurable max and initial values.
@@ -89,7 +93,6 @@ impl<T> Mutex<T> {
             data: UnsafeCell::new(value),
         }
     }
-
     /// Method for locking the mutex. If the lock is unsuccessfully the current threads execution will
     /// block, and wait until it is woken up.
     pub fn lock(&self) -> MutexGuard<T> {
@@ -100,6 +103,7 @@ impl<T> Mutex<T> {
 }
 
 unsafe impl<T> Sync for Mutex<T> where T: Send + Sync {}
+unsafe impl<T> Send for Mutex<T> where T: Send + Sync {}
 
 /// A guard for `Mutex<T>`. Ensures thread/memory safety of the data held by a `Mutex`
 pub struct MutexGuard<'a, T> {
@@ -125,11 +129,36 @@ impl<T> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         // Reduce the count of the semaphore back to 0, unlocking the `Mutex`
         self.mutex.semaphore.wait();
+        wake_one(&self.mutex.semaphore.counter);
     }
 }
 
 
 
 fn main() {
-    println!("Hello, world!");
+    use std::collections::VecDeque;
+    let q = VecDeque::new();
+    let mutex = &Mutex::new(q);
+
+    thread::scope(|s| {
+        for i in 0..10 {
+            s.spawn(move || {
+                let mut rng = rand::thread_rng();
+                for _j in 0..100 {
+                    let num = rng.gen_range(i * 10 ..= (i + 1) * 10);
+                    mutex.lock().push_back(num);
+                }
+            });
+        }
+    });
+
+    let mut counter = 0;
+    while counter < 1000 {
+        if let Some(generated_num) = mutex.lock().pop_front() {
+            println!("generated_num: {generated_num}");
+            counter += 1;
+        }
+    }
+
+    println!("processed {counter} nums complete");
 }
